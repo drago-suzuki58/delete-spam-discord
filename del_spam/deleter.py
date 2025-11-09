@@ -13,14 +13,39 @@ class MessageDeleter:
         self.filter_engine = filter_engine
         self.dry_run = config.DRY_RUN
         self.max_deletions = config.MAX_DELETIONS_PER_RUN
-        self.batch_size = config.BATCH_SIZE
+        self.batch_size = config.BULK_DELETE_MAX
         self.api_call_interval = config.API_CALL_INTERVAL
+
+    async def _bulk_delete_messages(
+        self, channel: discord.TextChannel, message_ids: list[int]
+    ) -> int:
+        if not message_ids:
+            return 0
+
+        try:
+            await channel.delete_messages(
+                [discord.Object(msg_id) for msg_id in message_ids]
+            )
+            logger.info(
+                f"Bulk deleted {len(message_ids)} messages from #{channel.name}"
+            )
+            return len(message_ids)
+        except discord.NotFound:
+            logger.warning("Some messages in batch not found")
+            return len(message_ids)
+        except discord.Forbidden:
+            logger.error(f"Permission denied to bulk delete in #{channel.name}")
+            return 0
+        except Exception as e:
+            logger.error(f"Failed to bulk delete messages in #{channel.name}: {e}")
+            return 0
 
     async def delete_by_rule(
         self, bot: discord.Client, rule_name: str, guild: Optional[discord.Guild] = None
     ) -> int:
         logger.info(f"Starting deletion for rule: {rule_name}")
         logger.info(f"Dry run: {self.dry_run}")
+        logger.info(f"Using bulk delete API (batch size: {self.batch_size})")
 
         if rule_name not in self.filter_engine.filters:
             logger.error(f"Rule not found: {rule_name}")
@@ -57,12 +82,20 @@ class MessageDeleter:
                     break
 
                 try:
+                    message_batch: list[int] = []
+
                     async for message in channel.history(limit=None):
                         if deleted_count >= self.max_deletions:
                             break
 
                         if self.filter_engine.matches_rule(rule_name, message):
-                            deleted_count += 1
+                            message_batch.append(message.id)
+                            logger.info(
+                                f"[BATCH] Added message {message.id} to batch "
+                                f"(batch size: {len(message_batch)}/{self.batch_size}) "
+                                f"from {message.author} in #{channel.name}: "
+                                f"{message.content[:50]}"
+                            )
 
                             if self.dry_run:
                                 logger.info(
@@ -71,24 +104,30 @@ class MessageDeleter:
                                     f"{message.content[:50]}"
                                 )
                             else:
-                                try:
-                                    await message.delete()
-                                    logger.info(
-                                        f"Deleted message {message.id} from {message.author} "
-                                        f"in #{channel.name}: {message.content[:50]}"
-                                    )
-                                except discord.NotFound:
-                                    logger.warning(f"Message {message.id} not found")
-                                except discord.Forbidden:
-                                    logger.error(
-                                        f"Permission denied to delete {message.id}"
-                                    )
-                                except Exception as e:
-                                    logger.error(
-                                        f"Failed to delete message {message.id}: {e}"
-                                    )
+                                deleted_count += 1
 
-                            await asyncio.sleep(self.api_call_interval)
+                            if (
+                                not self.dry_run
+                                and len(message_batch) >= self.batch_size
+                            ):
+                                batch_to_delete = message_batch[: self.batch_size]
+                                deleted = await self._bulk_delete_messages(
+                                    channel, batch_to_delete
+                                )
+                                deleted_count += deleted
+                                message_batch = message_batch[self.batch_size :]
+
+                                await asyncio.sleep(self.api_call_interval)
+
+                    if not self.dry_run and message_batch:
+                        deleted = await self._bulk_delete_messages(
+                            channel, message_batch
+                        )
+                        deleted_count += deleted
+                        await asyncio.sleep(self.api_call_interval)
+
+                    if self.dry_run:
+                        deleted_count += len(message_batch)
 
                 except discord.Forbidden:
                     logger.warning(
