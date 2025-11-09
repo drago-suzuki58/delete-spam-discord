@@ -28,58 +28,78 @@ class MessageDeleter:
 
         deleted_count = 0
 
-        if guild is None:
-            if not bot.guilds:
-                logger.error("No guilds accessible")
-                return 0
-            guild = bot.guilds[0]
+        guilds_to_process = []
+        if guild is not None:
+            guilds_to_process = [guild]
+        else:
+            guilds_to_process = bot.guilds
 
-        logger.info(f"Processing guild: {guild.name} (ID: {guild.id})")
+        if not guilds_to_process:
+            logger.error("No guilds accessible")
+            return 0
 
-        for channel in guild.text_channels:
+        logger.info(f"Processing {len(guilds_to_process)} guild(s)")
+
+        for target_guild in guilds_to_process:
             if deleted_count >= self.max_deletions:
                 logger.info(f"Reached maximum deletions limit ({self.max_deletions})")
                 break
 
-            try:
-                async for message in channel.history(limit=None):
-                    if deleted_count >= self.max_deletions:
-                        break
+            logger.info(
+                f"Processing guild: {target_guild.name} (ID: {target_guild.id})"
+            )
 
-                    if self.filter_engine.matches_rule(rule_name, message):
-                        deleted_count += 1
+            for channel in target_guild.text_channels:
+                if deleted_count >= self.max_deletions:
+                    logger.info(
+                        f"Reached maximum deletions limit ({self.max_deletions})"
+                    )
+                    break
 
-                        if self.dry_run:
-                            logger.info(
-                                f"[DRY RUN] Would delete message {message.id} "
-                                f"from {message.author} in #{channel.name}: "
-                                f"{message.content[:50]}"
-                            )
-                        else:
-                            try:
-                                await message.delete()
+                try:
+                    async for message in channel.history(limit=None):
+                        if deleted_count >= self.max_deletions:
+                            break
+
+                        if self.filter_engine.matches_rule(rule_name, message):
+                            deleted_count += 1
+
+                            if self.dry_run:
                                 logger.info(
-                                    f"Deleted message {message.id} from {message.author}"
+                                    f"[DRY RUN] Would delete message {message.id} "
                                     f"from {message.author} in #{channel.name}: "
                                     f"{message.content[:50]}"
                                 )
-                            except discord.NotFound:
-                                logger.warning(f"Message {message.id} not found")
-                            except discord.Forbidden:
-                                logger.error(
-                                    f"Permission denied to delete {message.id}"
-                                )
-                            except Exception as e:
-                                logger.error(
-                                    f"Failed to delete message {message.id}: {e}"
-                                )
+                            else:
+                                try:
+                                    await message.delete()
+                                    logger.info(
+                                        f"Deleted message {message.id} from {message.author} "
+                                        f"in #{channel.name}: {message.content[:50]}"
+                                    )
+                                except discord.NotFound:
+                                    logger.warning(f"Message {message.id} not found")
+                                except discord.Forbidden:
+                                    logger.error(
+                                        f"Permission denied to delete {message.id}"
+                                    )
+                                except Exception as e:
+                                    logger.error(
+                                        f"Failed to delete message {message.id}: {e}"
+                                    )
 
-                        await asyncio.sleep(self.api_call_interval)
+                            await asyncio.sleep(self.api_call_interval)
 
-            except discord.Forbidden:
-                logger.warning(f"Permission denied for channel: {channel.name}")
-            except Exception as e:
-                logger.error(f"Error processing channel {channel.name}: {e}")
+                except discord.Forbidden:
+                    logger.warning(
+                        f"Permission denied for channel: {channel.name} in {target_guild.name}"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Error processing channel {channel.name} in {target_guild.name}: {e}"
+                    )
+
+            logger.info(f"Completed processing guild: {target_guild.name}")
 
         logger.info(f"Deletion completed. Total: {deleted_count} messages")
         return deleted_count
