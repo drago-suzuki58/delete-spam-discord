@@ -103,7 +103,6 @@ class MessageDeleter:
                                     f"from {message.author} in #{channel.name}: "
                                     f"{message.content[:50]}"
                                 )
-                            else:
                                 deleted_count += 1
 
                             if (
@@ -126,9 +125,6 @@ class MessageDeleter:
                         deleted_count += deleted
                         await asyncio.sleep(self.api_call_interval)
 
-                    if self.dry_run:
-                        deleted_count += len(message_batch)
-
                 except discord.Forbidden:
                     logger.warning(
                         f"Permission denied for channel: {channel.name} in {target_guild.name}"
@@ -149,6 +145,7 @@ class MessageDeleter:
         rule_names: list[str],
         guild: Optional[discord.Guild] = None,
     ) -> int:
+        """複数ルールに基づいてメッセージを削除"""
         total_deleted = 0
         for rule_name in rule_names:
             deleted = await self.delete_by_rule(bot, rule_name, guild)
